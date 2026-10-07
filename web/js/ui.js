@@ -187,7 +187,7 @@
     const cls = E.CLASSES[E.state.classId];
     const sheet = E.heroSheet();
     const meta = E.state.meta;
-    const merc = E.state.merc;
+    const mercs = E.state.mercs || [];
     const active = E.run && !E.run.finished;
     return `<section class="hub">
       <div class="hero-panel">
@@ -227,7 +227,7 @@
         <button class="menu-card" data-act="stats"><img src="${E.ART.scroll}" alt=""><b>Память</b><span>${meta.kills} убийств · ${meta.deaths} смертей</span></button>
       </div>
       <aside class="side-note">
-        <p><b>Отряд.</b> ${merc ? esc(merc.name) + ", " + esc(E.CLASSES[merc.classId].name) + ", ур. " + merc.level : "Ты один. На площади можно нанять спутника."}</p>
+        <p><b>Отряд.</b> ${mercs.length ? mercs.map((m) => esc(m.name) + ", " + esc(E.CLASSES[m.classId].name) + ", ур. " + m.level).join(" · ") : "Ты один. На площади можно нанять до трёх спутников."}</p>
         <p><b>Пассивка.</b> ${esc(cls.passive)} — ${esc(cls.passiveText)}</p>
       </aside>
     </section>`;
@@ -238,16 +238,26 @@
   }
 
   function wearTarget() {
-    if (wearWho === "merc" && E.state.merc && E.state.merc.equipment) return "merc";
+    const list = E.state.mercs || [];
+    const idx = Number(wearWho);
+    if (wearWho !== "kai" && list[idx]) return String(idx);
+    wearWho = "kai";
     return "kai";
+  }
+
+  function viewedMerc() {
+    const who = wearTarget();
+    return who === "kai" ? null : E.state.mercs[Number(who)];
   }
 
   function renderCharacter() {
     const who = wearTarget();
-    const merc = E.state.merc;
-    const gear = who === "merc" ? merc.equipment : E.state.equipment;
-    const sheet = who === "merc" ? E.mercSheet() : E.heroSheet();
-    const cls = E.CLASSES[who === "merc" ? merc.classId : E.state.classId];
+    const mercs = E.state.mercs || [];
+    const merc = viewedMerc();
+    const gear = merc ? merc.equipment : E.state.equipment;
+    const sheet = merc ? E.mercSheet(merc) : E.heroSheet();
+    const cls = E.CLASSES[merc ? merc.classId : E.state.classId];
+    const points = merc ? E.mercPoints(merc) : E.skillPoints();
     const slots = E.SLOTS.map((slot) => {
       const item = gear[slot.id];
       return `<button class="slot ${item ? "filled rarity-" + item.rarity : ""}" data-act="unequip" data-arg="${slot.id}">
@@ -264,36 +274,35 @@
           <img class="slot-icon" src="${E.ART.slots[item.slot]}" alt="">
           <div><b>${esc(item.name)}</b><small>${esc(rarityName(item.rarity))} · ${esc(slotName(item.slot))} · ${esc(E.itemLabel(item).split(" · ").slice(1).join(" · "))}</small></div>
           <div class="row tight">
-            <button data-act="equip" data-arg="${i}">${who === "merc" ? "Спутнику" : "Надеть"}</button>
+            <button data-act="equip" data-arg="${i}">${merc ? "Спутнику" : "Надеть"}</button>
             <button data-act="sell" data-arg="${i}">${item.sell} зол.</button>
           </div>
         </li>`).join("")
       : `<li class="empty">Рюкзак пуст. Башня это исправит.</li>`;
     const autos = E.RARITIES.map((r) => `<button class="chip ${E.state.autoSell.includes(r.id) ? "on" : ""}" data-act="autosell" data-arg="${r.id}">${esc(r.name)}</button>`).join("");
     const tabs = ["gear", "tree", "sets"].map((id) => {
-      const label = id === "gear" ? "Снаряжение" : id === "tree" ? "Прокачка" + (E.skillPoints() ? " · " + E.skillPoints() : "") : "Сеты";
+      const label = id === "gear" ? "Снаряжение" : id === "tree" ? "Прокачка" + (points ? " · " + points : "") : "Сеты";
       return `<button class="chip ${charTab === id ? "on" : ""}" data-act="char-tab" data-arg="${id}">${label}</button>`;
     }).join("");
     const activeSets = (E.SETS || []).map((set) => {
       const count = E.setPieces(set, gear);
       return count ? set.name + " " + count : "";
     }).filter(Boolean).join(" · ");
-    const wearChips = merc
+    const wearChips = mercs.length
       ? `<div class="chips">
           <button class="chip ${who === "kai" ? "on" : ""}" data-act="wear" data-arg="kai">Кай</button>
-          <button class="chip ${who === "merc" ? "on" : ""}" data-act="wear" data-arg="merc">${esc(merc.name)}</button>
+          ${mercs.map((m, i) => `<button class="chip ${who === String(i) ? "on" : ""}" data-act="wear" data-arg="${i}">${esc(m.name)}</button>`).join("")}
         </div>`
       : "";
     const body = charTab === "tree" ? renderTree() : charTab === "sets" ? renderSets(gear) : `
-      ${wearChips}
       <div class="row">
-        <button class="btn solid" data-act="equip-best">${who === "merc" ? "Лучшее спутнику" : "Надеть лучшее"}</button>
+        <button class="btn solid" data-act="equip-best">${merc ? "Лучшее спутнику" : "Надеть лучшее"}</button>
         <button class="btn line" data-act="sell-common">Продать обычное</button>
         <button class="btn line" data-act="sell-all">Продать всё</button>
-        <button class="btn line" data-act="class">Сменить класс</button>
+        ${merc ? "" : `<button class="btn line" data-act="class">Сменить класс</button>`}
         ${E.run ? `<button class="btn line" data-act="combat">К бою</button>` : ""}
       </div>
-      <h3>${who === "merc" ? "Снаряжение спутника" : "Экипировка"}</h3>
+      <h3>${merc ? "Снаряжение спутника" : "Экипировка"}</h3>
       <div class="slots">${slots}</div>
       <h3>Рюкзак ${E.state.inventory.length}/${E.invMax()}</h3>
       <p class="fine">Автопродажа при подборе:</p>
@@ -301,25 +310,27 @@
       <ul class="bag">${bag}</ul>`;
     return `<section class="character">
       <div class="section-head with-face">
-        <img class="face" src="${who === "merc" ? E.ART.classes[merc.classId] : E.ART.kai}" alt="">
+        <img class="face" src="${merc ? E.ART.classes[merc.classId] : E.ART.kai}" alt="">
         <div>
-        <p class="eyebrow">${esc(cls.name)} · уровень ${who === "merc" ? merc.level : E.state.level}</p>
-        <h2>${who === "merc" ? esc(merc.name) : "Кай"}</h2>
+        <p class="eyebrow">${esc(cls.name)} · уровень ${merc ? merc.level : E.state.level}</p>
+        <h2>${merc ? esc(merc.name) : "Кай"}</h2>
         <p>${sheet.hp} HP · ${sheet.atk} атаки · ${sheet.def} защиты · крит ${Math.round(sheet.crit)}% · уклон ${Math.round(sheet.dodge)}%</p>
         <p class="fine">${activeSets || "Сет ещё не собран. Редкие вещи носят имя сета."}</p>
         </div>
       </div>
+      ${wearChips}
       <div class="chips">${tabs}</div>
       ${body}
     </section>`;
   }
 
   function renderTree() {
-    const cls = E.CLASSES[E.state.classId];
-    const tree = (E.state.skills || {})[E.state.classId] || {};
-    const nodes = E.skillNodes();
+    const merc = viewedMerc();
+    const cls = E.CLASSES[merc ? merc.classId : E.state.classId];
+    const tree = merc ? (merc.skills || {}) : ((E.state.skills || {})[E.state.classId] || {});
+    const nodes = merc ? E.skillNodes(merc.classId, merc.skills) : E.skillNodes();
     const byId = Object.fromEntries(nodes.map((node) => [node.id, node]));
-    const points = E.skillPoints();
+    const points = merc ? E.mercPoints(merc) : E.skillPoints();
     const spots = {
       a1u: [18, 80], a1p: [18, 56], a1m: [18, 32],
       a2u: [50, 80], a2p: [50, 56], a2m: [50, 32],
@@ -388,7 +399,7 @@
       <div class="talent-top">
         <div>
           <p class="eyebrow">${esc(cls.name)}</p>
-          <h3>Дерево умений</h3>
+          <h3>${merc ? "Дерево " + esc(merc.name) : "Дерево умений"}</h3>
         </div>
         <div class="talent-points"><b>${points}</b><span>${pointWord(points)}</span></div>
       </div>
@@ -520,20 +531,22 @@
   }
 
   function townTavern() {
-    if (E.state.merc) {
-      const m = E.state.merc;
+    const mercs = E.state.mercs || [];
+    const hired = mercs.map((m, i) => {
       const cls = E.CLASSES[m.classId];
+      const pts = E.mercPoints(m);
       return `<article class="offer">
         <img class="offer-icon" src="${E.ART.classes[m.classId]}" alt="">
-        <div><b>${esc(m.name)}</b><p>${esc(cls.name)}, уровень ${m.level}. Дерётся сам, опыт делит с тобой. Отпустить — вернуть 500 золота.</p></div>
-        <button class="btn line danger" data-act="dismiss">Отпустить</button>
+        <div><b>${esc(m.name)}</b><p>${esc(cls.name)}, уровень ${m.level}. Очков умений: ${pts}. Отпустить — вернуть 500 золота и его вещи в рюкзак.</p></div>
+        <button class="btn line danger" data-act="dismiss" data-arg="${i}">Отпустить</button>
       </article>`;
-    }
+    }).join("");
+    if (mercs.length >= 3) return `<p class="lead">В отряде три спутника. Больше таверна не берёт.</p><div class="offers">${hired}</div>`;
     const cards = Object.values(E.CLASSES).map((cls) => `<button class="class-mini" data-act="hire" data-arg="${cls.id}">
       <img src="${E.ART.classes[cls.id]}" alt="">
       <b>${esc(cls.name)}</b><span>${esc(cls.blurb)}</span>
     </button>`).join("");
-    return `<p class="lead">Один спутник за ${E.SHOP.hire} золота. Он слабее героя, но бьёт каждый ход.</p><div class="hire-grid">${cards}</div>`;
+    return `${hired ? `<div class="offers">${hired}</div>` : ""}<p class="lead">Спутников можно нанять ${mercs.length}/3, каждый за ${E.SHOP.hire} золота. Они слабее героя, бьют каждый ход и качают своё дерево.</p><div class="hire-grid">${cards}</div>`;
   }
 
   function renderWorld() {
@@ -650,7 +663,7 @@
       </div>
       <p class="fine">${run.auto ? "Автобой. Умения срабатывают сами." : "Пауза."}</p>`;
     }
-    const merc = run.merc;
+    const mercs = run.mercs || [];
     return `<section class="combat" style="--scene:url('${E.ART.zones[zone.tone]}')">
       <header class="combat-head">
         <div>
@@ -670,7 +683,7 @@
             ${bar(hero.hp, hero.maxHp)}
             <small>${hero.hp} / ${hero.maxHp} · АТК ${hero.atk} · ЗЩ ${hero.def}</small>
           </article>
-          ${merc ? `<article class="unit ${merc.hp <= 0 ? "is-dead" : ""}${mark(merc.name)}">
+          ${mercs.map((merc) => `<article class="unit ${merc.hp <= 0 ? "is-dead" : ""}${mark(merc.name)}">
             <span class="art-wrap">
               <img class="unit-art" src="${E.ART.classes[merc.classId]}" alt="">
               ${floater(merc.name)}
@@ -678,7 +691,7 @@
             <b>${esc(merc.name)} · ${esc(E.CLASSES[merc.classId].name)}</b>
             ${bar(merc.hp, merc.maxHp)}
             <small>${Math.max(0, merc.hp)} / ${merc.maxHp}</small>
-          </article>` : ""}
+          </article>`).join("")}
         </div>
         <div class="log">${log}</div>
         <div class="foes">${foes}</div>
@@ -730,14 +743,14 @@
     else if (act === "char-tab") { charTab = arg || "gear"; show("character"); }
     else if (act === "tree-focus") {
       if (treeFocus === arg && node.classList.contains("ready")) {
-        const res = E.buySkill(arg);
+        const res = E.buySkill(arg, wearTarget());
         toast(res.msg);
         E.refreshCombat();
       } else treeFocus = arg;
       render();
     }
     else if (act === "buy-skill") {
-      const res = E.buySkill(arg);
+      const res = E.buySkill(arg, wearTarget());
       toast(res.msg);
       E.refreshCombat();
       render();
@@ -767,7 +780,7 @@
       toast(res.msg);
       render();
     } else if (act === "dismiss") {
-      const res = E.dismissMerc();
+      const res = E.dismissMerc(arg);
       if (res === "full") toast("Рюкзак полон: вещи спутника некуда вернуть");
       else {
         wearWho = "kai";
@@ -776,7 +789,7 @@
       E.refreshCombat();
       render();
     } else if (act === "wear") {
-      wearWho = arg === "merc" ? "merc" : "kai";
+      wearWho = arg === "kai" || arg == null ? "kai" : String(arg);
       render();
     } else if (act === "equip") {
       E.equipItem(Number(arg), wearTarget());

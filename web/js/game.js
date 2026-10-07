@@ -34,13 +34,27 @@ window.ETERNUM = window.ETERNUM || {};
     };
     Object.values(E.state.equipment || {}).forEach(touch);
     (E.state.inventory || []).forEach(touch);
-    if (E.state.merc && E.state.merc.equipment) Object.values(E.state.merc.equipment).forEach(touch);
+    (E.state.mercs || []).forEach((merc) => {
+      if (merc && merc.equipment) Object.values(merc.equipment).forEach(touch);
+    });
   }
 
-  function ensureMercGear() {
-    if (!E.state.merc) return null;
-    E.state.merc.equipment = Object.assign(blankGear(), E.state.merc.equipment || {});
-    return E.state.merc.equipment;
+  function normalizeMerc(raw) {
+    const merc = {
+      id: raw.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name: raw.name,
+      classId: raw.classId,
+      level: raw.level || 1,
+      xp: raw.xp || 0,
+      equipment: Object.assign(blankGear(), raw.equipment || {}),
+      skills: raw.skills && typeof raw.skills === "object" && !Array.isArray(raw.skills) ? raw.skills : {}
+    };
+    return merc;
+  }
+
+  function mercList() {
+    if (!Array.isArray(E.state.mercs)) E.state.mercs = [];
+    return E.state.mercs;
   }
 
   function setPieces(set, bag) {
@@ -98,7 +112,7 @@ window.ETERNUM = window.ETERNUM || {};
       scrolls: { blessing: 0, xp: 0, luck: 0, greed: 0, fog: 0, breath: 0 },
       potions: 0,
       ascension: false,
-      merc: null,
+      mercs: [],
       autoSell: [],
       skills: {},
       meta: { crystals: 0, dmg: 0, hp: 0, drop: 0, bestFloor: 0, kills: 0, deaths: 0, goldEarned: 0, items: 0 }
@@ -119,7 +133,9 @@ window.ETERNUM = window.ETERNUM || {};
       E.state.meta = Object.assign(blankSave().meta, data.meta || {});
       E.state.inventory = Array.isArray(data.inventory) ? data.inventory : [];
       E.state.skills = data.skills && typeof data.skills === "object" ? data.skills : {};
-      if (E.state.merc) ensureMercGear();
+      const legacy = !Array.isArray(data.mercs) && data.merc ? [data.merc] : (data.mercs || []);
+      E.state.mercs = legacy.slice(0, 3).map(normalizeMerc);
+      delete E.state.merc;
       tagOwnedItems();
       if (E.state.classId && !data.skillTreeInit) {
         const known = E.state.skills[E.state.classId] || {};
@@ -249,12 +265,12 @@ window.ETERNUM = window.ETERNUM || {};
     };
   };
 
-  E.mercSheet = function () {
-    const merc = E.state.merc;
+  E.mercSheet = function (merc) {
+    merc = merc || mercList()[0];
     if (!merc) return null;
     const cls = E.CLASSES[merc.classId];
     const lvl = merc.level;
-    const gear = ensureMercGear();
+    const gear = merc.equipment;
     const eq = equipTotals(gear);
     const set = setStatBonus(gear);
     let hp = Math.floor((cls.hp + (lvl - 1) * 5) * 0.82);
@@ -267,13 +283,28 @@ window.ETERNUM = window.ETERNUM || {};
     const mods = runMods();
     hp = Math.floor(hp * mods.hp * (1 + E.state.meta.hp * 0.05));
     atk = Math.floor(atk * mods.dmg * (1 + mods.blessing) * (1 + E.state.meta.dmg * 0.05));
+    const rank = (id) => (merc.skills && merc.skills[id]) || 0;
+    const core = rank("core");
+    const stat = rank("stat");
+    if (cls.id === "WARRIOR") hp = Math.floor(hp * (1 + 0.035 * stat));
+    let crit = cls.crit + eq.crit + set.crit;
+    let dodge = cls.dodge + eq.dodge + set.dodge;
+    let critDmgOut = cls.critDmg + (cls.id === "MAGE" ? 0.4 : 0) + eq.critDmg + set.critDmg;
+    if (cls.id === "MAGE") { critDmgOut += core * 0.05; crit += stat * 3; }
+    if (cls.id === "ROGUE") { crit += core * 2; dodge += stat * 2; }
+    if (cls.id === "CLERIC") {
+      hp = Math.floor(hp * (1 + 0.02 * core));
+      def += Math.floor(def * 0.02 * stat);
+    }
+    hp += rank("over") * 5;
+    atk += rank("over");
     return {
       hp: Math.max(1, hp),
       atk: Math.max(1, atk),
       def: Math.max(0, def),
-      crit: clamp(cls.crit + eq.crit + set.crit, 0, 50),
-      critDmg: cls.critDmg + (cls.id === "MAGE" ? 0.4 : 0) + eq.critDmg + set.critDmg,
-      dodge: clamp(cls.dodge + eq.dodge + set.dodge, 0, 66),
+      crit: clamp(crit, 0, 50),
+      critDmg: critDmgOut,
+      dodge: clamp(dodge, 0, 66),
       vamp: Math.min(50, eq.vamp + set.vamp),
       vampHeal: Math.max(eq.vampHeal, set.vampHeal)
     };
@@ -294,15 +325,15 @@ window.ETERNUM = window.ETERNUM || {};
       E.state.level += 1;
       notes.push("Кай достигает " + E.state.level + " уровня. Здоровье восстановлено. Очко умений ждёт в прокачке.");
     }
-    if (E.state.merc) {
-      E.state.merc.xp += xp;
-      const cls = E.CLASSES[E.state.merc.classId];
-      while (E.state.merc.xp >= xpNeed(E.state.merc.level)) {
-        E.state.merc.xp -= xpNeed(E.state.merc.level);
-        E.state.merc.level += 1;
-        notes.push(E.state.merc.name + " (" + cls.name + ") достигает " + E.state.merc.level + " уровня.");
+    mercList().forEach((merc) => {
+      merc.xp += xp;
+      const cls = E.CLASSES[merc.classId];
+      while (merc.xp >= xpNeed(merc.level)) {
+        merc.xp -= xpNeed(merc.level);
+        merc.level += 1;
+        notes.push(merc.name + " (" + cls.name + ") достигает " + merc.level + " уровня. Очко умений ждёт в его прокачке.");
       }
-    }
+    });
     return notes;
   }
 
@@ -443,6 +474,16 @@ window.ETERNUM = window.ETERNUM || {};
     return 18 + (floor - 70) * (22 / 30);
   }
 
+  function mercFighter(merc, sheet) {
+    return {
+      name: merc.name, classId: merc.classId, mercId: merc.id, skills: merc.skills,
+      maxHp: sheet.hp, hp: sheet.hp, atk: sheet.atk, def: sheet.def,
+      crit: sheet.crit, critDmg: sheet.critDmg, dodge: sheet.dodge,
+      vamp: sheet.vamp, vampHeal: sheet.vampHeal,
+      cd1: 0, cd2: 0, defUp: 0, mad: 0, noCrit: 0, stood: false, alive: true
+    };
+  }
+
   function freshAllies() {
     const sheet = E.heroSheet();
     E.run.hero = {
@@ -452,17 +493,7 @@ window.ETERNUM = window.ETERNUM || {};
       vamp: sheet.vamp, vampHeal: sheet.vampHeal,
       cd1: 0, cd2: 0, defUp: 0, mad: 0, noCrit: 0, alive: true
     };
-    const mercSheet = E.mercSheet();
-    if (mercSheet && E.state.merc) {
-      E.run.merc = {
-        name: E.state.merc.name, classId: E.state.merc.classId,
-        maxHp: mercSheet.hp, hp: mercSheet.hp, atk: mercSheet.atk, def: mercSheet.def,
-        crit: mercSheet.crit, critDmg: mercSheet.critDmg, dodge: mercSheet.dodge,
-        vamp: mercSheet.vamp, vampHeal: mercSheet.vampHeal, alive: true
-      };
-    } else {
-      E.run.merc = null;
-    }
+    E.run.mercs = mercList().map((merc) => mercFighter(merc, E.mercSheet(merc)));
   }
 
   function syncSheetsKeepingHp() {
@@ -477,19 +508,29 @@ window.ETERNUM = window.ETERNUM || {};
     E.run.hero.dodge = sheet.dodge;
     E.run.hero.vamp = sheet.vamp;
     E.run.hero.vampHeal = sheet.vampHeal;
-    if (E.run.merc && E.state.merc) {
-      const prev = E.run.merc.hp / Math.max(1, E.run.merc.maxHp);
-      const ms = E.mercSheet();
-      E.run.merc.maxHp = ms.hp;
-      E.run.merc.hp = E.run.merc.alive ? clamp(Math.round(ms.hp * prev), 0, ms.hp) : 0;
-      E.run.merc.atk = ms.atk;
-      E.run.merc.def = ms.def;
-      E.run.merc.crit = ms.crit;
-      E.run.merc.critDmg = ms.critDmg;
-      E.run.merc.dodge = ms.dodge;
-      E.run.merc.vamp = ms.vamp;
-      E.run.merc.vampHeal = ms.vampHeal;
-    }
+    E.run.mercs = (E.run.mercs || []).map((unit) => {
+      const merc = mercList().find((item) => item.id === unit.mercId);
+      if (!merc) return null;
+      const ms = E.mercSheet(merc);
+      const prev = unit.hp / Math.max(1, unit.maxHp);
+      unit.maxHp = ms.hp;
+      unit.hp = unit.alive ? clamp(Math.round(ms.hp * prev), 0, ms.hp) : 0;
+      unit.atk = ms.atk;
+      unit.def = ms.def;
+      unit.crit = ms.crit;
+      unit.critDmg = ms.critDmg;
+      unit.dodge = ms.dodge;
+      unit.vamp = ms.vamp;
+      unit.vampHeal = ms.vampHeal;
+      unit.skills = merc.skills;
+      return unit;
+    }).filter(Boolean);
+    const present = {};
+    E.run.mercs.forEach((unit) => { present[unit.mercId] = true; });
+    mercList().forEach((merc) => {
+      if (present[merc.id]) return;
+      E.run.mercs.push(mercFighter(merc, E.mercSheet(merc)));
+    });
   }
 
   E.startRun = function (floor) {
@@ -572,7 +613,7 @@ window.ETERNUM = window.ETERNUM || {};
       if (setReady("chaos", 6)) atkMult *= 1 + Math.min(0.2, (E.run.floorKills || 0) * 0.02);
     }
     let defMult = (defn.defUp ? 1.18 : 1) * (defn.mad ? 0.83 : 1);
-    if (hero && defn === hero && sk("cap") && defn.classId === "WARRIOR" && defn.hp / Math.max(1, defn.maxHp) < 0.3) defMult *= 1.2;
+    if (defn.classId === "WARRIOR" && unitRank(defn, "cap") && defn.hp / Math.max(1, defn.maxHp) < 0.3) defMult *= 1.2;
     const pen = mods.pen || 0;
     const eatk = Math.max(1, Math.floor((att.atk * (att.atkDown ? 0.8 : 1)) * atkMult));
     const edef = Math.max(0, Math.floor(defn.def * (1 - pen) * defMult));
@@ -586,12 +627,20 @@ window.ETERNUM = window.ETERNUM || {};
       dmg += Math.max(1, Math.floor(dmg * 0.6));
       echo = true;
     }
-    if (hero && defn === hero && setReady("titan", 6) && E.run.merc && E.run.merc.hp > 0) {
+    const guard = (E.run.mercs || []).find((unit) => unit.hp > 0 && unit !== defn);
+    if (hero && defn === hero && setReady("titan", 6) && guard) {
       const share = Math.floor(dmg * 0.15);
       dmg -= share;
-      E.run.merc.hp = Math.max(0, E.run.merc.hp - share);
+      guard.hp = Math.max(0, guard.hp - share);
     }
     const next = defn.hp - dmg;
+    if (next <= 0 && defn.skills && defn.classId === "BERSERKER" && (defn.skills.cap || 0) && !defn.stood) {
+      const dealt = Math.max(0, defn.hp - 1);
+      defn.stood = true;
+      defn.hp = 1;
+      log("good", "Последний рубеж: " + defn.name + " остаётся на 1 HP");
+      return { dmg: dealt, crit, dodge: false, echo, saved: true };
+    }
     if (next <= 0 && hero && defn === hero && spareHero(defn)) {
       return { dmg: defn.hp - 1, crit, dodge: false, echo, saved: true };
     }
@@ -645,12 +694,18 @@ window.ETERNUM = window.ETERNUM || {};
     return result;
   }
 
+  function unitRank(unit, id) {
+    if (unit && unit.skills) return unit.skills[id] || 0;
+    if (E.run && unit === E.run.hero) return sk(id);
+    return 0;
+  }
+
   function berserkMult(unit) {
     if (!unit || unit.classId !== "BERSERKER") return 1;
     const missing = 1 - unit.hp / Math.max(1, unit.maxHp);
     const stacks = Math.floor(missing / 0.05);
-    const per = 0.0175 + sk("core") * 0.0025;
-    const cap = 0.32 + sk("stat") * 0.04;
+    const per = 0.0175 + unitRank(unit, "core") * 0.0025;
+    const cap = 0.32 + unitRank(unit, "stat") * 0.04;
     return 1 + Math.min(cap, stacks * per);
   }
 
@@ -683,7 +738,7 @@ window.ETERNUM = window.ETERNUM || {};
     let mult = 1;
     if (defender.classId === "WARRIOR" && attacker && !attacker.struck) {
       attacker.struck = true;
-      mult *= 1 - (0.28 + sk("core") * 0.015);
+      mult *= 1 - (0.28 + unitRank(defender, "core") * 0.015);
     }
     if (E.run && defender === E.run.hero) {
       if (setReady("titan", 4)) mult *= 0.88;
@@ -824,8 +879,15 @@ window.ETERNUM = window.ETERNUM || {};
     if (!fresh.s2 && hero.cd2 > 0) hero.cd2--;
   };
 
+  function livingAllies() {
+    const units = [];
+    if (E.run.hero && E.run.hero.hp > 0) units.push(E.run.hero);
+    (E.run.mercs || []).forEach((unit) => { if (unit.hp > 0) units.push(unit); });
+    return units;
+  }
+
   function castHeal(pct) {
-    const units = [E.run.hero].concat(E.run.merc && E.run.merc.hp > 0 ? [E.run.merc] : []);
+    const units = livingAllies();
     units.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp);
     const ally = units[0];
     const heal = Math.max(1, Math.floor(ally.maxHp * (pct || 0.2)));
@@ -867,7 +929,7 @@ window.ETERNUM = window.ETERNUM || {};
   }
 
   function partyAlive() {
-    return E.run.hero.hp > 0 || (E.run.merc && E.run.merc.hp > 0);
+    return livingAllies().length > 0;
   }
 
   function enemyPhase() {
@@ -886,9 +948,7 @@ window.ETERNUM = window.ETERNUM || {};
     });
     E.run.foes.forEach((foe) => {
       if (foe.hp <= 0) return;
-      const allies = [];
-      if (E.run.hero.hp > 0) allies.push(E.run.hero);
-      if (E.run.merc && E.run.merc.hp > 0) allies.push(E.run.merc);
+      const allies = livingAllies();
       if (!allies.length) return;
       const ally = pick(allies);
       const result = strike(foe, ally, { inMult: incomingGuard(ally, foe) });
@@ -899,12 +959,100 @@ window.ETERNUM = window.ETERNUM || {};
         log("bad", ally.name + " падает");
       }
     });
-    if (E.run.merc && E.run.merc.hp > 0 && livingFoes().length) {
-      const foe = livingFoes().slice().sort((a, b) => a.hp - b.hp)[0];
-      const result = strike(E.run.merc, foe, {});
-      describeHit(E.run.merc.name, foe.name, result, "атакует");
-      afterHeroHit(E.run.merc, result);
+    (E.run.mercs || []).forEach((unit) => mercAct(unit));
+  }
+
+  function mercBonus(unit, which) {
+    const power = which === 1 ? "a1p" : "a2p";
+    const master = which === 1 ? "a1m" : "a2m";
+    return 1 + (unitRank(unit, power) + unitRank(unit, master)) * 0.05;
+  }
+
+  function mercAct(unit) {
+    if (!unit || unit.hp <= 0 || !livingFoes().length && unit.classId !== "CLERIC") return;
+    const cls = E.CLASSES[unit.classId];
+    const open1 = unitRank(unit, "a1u") >= 1;
+    const open2 = unitRank(unit, "a2u") >= 1;
+    const foe = livingFoes().slice().sort((a, b) => a.hp - b.hp)[0];
+    let action = "attack";
+    if (open1 && cls.id === "CLERIC" && unit.cd1 === 0 && livingAllies().some((ally) => ally.hp / ally.maxHp < 0.55)) action = "s1";
+    else if (open2 && cls.id === "WARRIOR" && unit.cd2 === 0 && unit.hp / unit.maxHp < 0.4) action = "s2";
+    else if (open2 && cls.id === "BERSERKER" && unit.cd2 === 0 && unit.hp / unit.maxHp < 0.55) action = "s2";
+    else if (open1 && unit.cd1 === 0 && foe) action = "s1";
+    else if (open2 && unit.cd2 === 0 && foe && cls.id !== "WARRIOR" && cls.id !== "BERSERKER") action = "s2";
+    const fresh = { s1: action === "s1", s2: action === "s2", mad: action === "s2" && cls.id === "BERSERKER", def: action === "s1" && cls.id === "WARRIOR", nocrit: action === "s2" && cls.id === "WARRIOR" };
+    if (action === "s1" && cls.id === "CLERIC") {
+      const pct = (0.2 + unitRank(unit, "a1p") * 0.015 + unitRank(unit, "a1m") * 0.005) * (unitRank(unit, "cap") ? 1.1 : 1);
+      const allies = livingAllies().slice().sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp);
+      const ally = allies[0];
+      const heal = Math.max(1, Math.floor(ally.maxHp * pct));
+      ally.hp = Math.min(ally.maxHp, ally.hp + heal);
+      log("heal", unit.name + " исцеляет " + ally.name + " на " + heal + " HP");
+      unit.cd1 = unitRank(unit, "a1m") >= 3 ? Math.max(1, cls.s1cd - 1) : cls.s1cd;
+    } else if (action === "s2" && cls.id === "BERSERKER") {
+      unit.mad = 3 + unitRank(unit, "a2m");
+      unit.cd2 = cls.s2cd;
+      log("skill", unit.name + ": безумие на " + unit.mad + " хода");
+    } else if (action === "s2" && cls.id === "WARRIOR") {
+      unit.maxHp = Math.floor(unit.maxHp * 1.18);
+      unit.hp = Math.min(unit.maxHp, unit.hp + Math.floor(unit.maxHp * 0.18));
+      unit.noCrit = 1 + unitRank(unit, "a2m");
+      unit.cd2 = cls.s2cd;
+      log("skill", unit.name + " встаёт непоколебимо");
+    } else if (action === "s1" && cls.id === "MAGE" && foe) {
+      livingFoes().forEach((target) => {
+        const result = strike(unit, target, { atkMult: 0.7 * mercBonus(unit, 1), pen: 0.5 + unitRank(unit, "a1m") * 0.05 });
+        describeHit(unit.name, target.name, result, "сжигает");
+        afterHeroHit(unit, result);
+      });
+      unit.cd1 = cls.s1cd;
+    } else if (action === "s1" && foe) {
+      const mult = cls.id === "WARRIOR" ? 1.35 : cls.id === "ROGUE" ? 1.4 : cls.id === "BERSERKER" ? 1.65 : 1;
+      const mods = { atkMult: mult * mercBonus(unit, 1) };
+      if (cls.id === "ROGUE") {
+        mods.ignoreDodge = true;
+        mods.critBonus = 25 + unitRank(unit, "a1m") * 5;
+        if (unitRank(unit, "cap") && foe.hp / foe.maxHp < 0.25) mods.atkMult *= 1.5;
+      }
+      if (cls.id === "BERSERKER") {
+        const cost = Math.max(1, Math.floor(unit.hp * Math.max(0.04, 0.09 - unitRank(unit, "a1m") * 0.01)));
+        unit.hp = Math.max(1, unit.hp - cost);
+      }
+      if (cls.id === "WARRIOR") unit.defUp = 2 + unitRank(unit, "a1m");
+      const result = strike(unit, foe, mods);
+      describeHit(unit.name, foe.name, result, "бьёт");
+      afterHeroHit(unit, result);
+      unit.cd1 = cls.s1cd;
+    } else if (action === "s2" && foe) {
+      const mods = { atkMult: (cls.id === "MAGE" ? 1.2 : cls.id === "CLERIC" ? 1.1 : 1) * mercBonus(unit, 2) };
+      const result = strike(unit, foe, mods);
+      describeHit(unit.name, foe.name, result, "бьёт");
+      afterHeroHit(unit, result);
+      if (cls.id === "MAGE") foe.atkDown = 2 + unitRank(unit, "a2m");
+      if (cls.id === "ROGUE") {
+        foe.poison = 3;
+        foe.poisonDmg = Math.max(1, Math.floor(unit.atk * (0.3 + unitRank(unit, "a2m") * 0.1)));
+      }
+      if (cls.id === "CLERIC" && !result.dodge) {
+        const heal = Math.floor(result.dmg * (0.5 + unitRank(unit, "a2m") * 0.1) * (unitRank(unit, "cap") ? 1.1 : 1));
+        unit.hp = Math.min(unit.maxHp, unit.hp + heal);
+      }
+      unit.cd2 = cls.s2cd;
+    } else if (foe) {
+      const times = unit.mad > 0 ? 2 : 1;
+      for (let i = 0; i < times; i++) {
+        const live = livingFoes().slice().sort((a, b) => a.hp - b.hp)[0];
+        if (!live) break;
+        const result = strike(unit, live, {});
+        describeHit(unit.name, live.name, result, "атакует");
+        afterHeroHit(unit, result);
+      }
     }
+    if (!fresh.mad && unit.mad > 0) unit.mad--;
+    if (!fresh.def && unit.defUp > 0) unit.defUp--;
+    if (!fresh.nocrit && unit.noCrit > 0) unit.noCrit--;
+    if (!fresh.s1 && unit.cd1 > 0) unit.cd1--;
+    if (!fresh.s2 && unit.cd2 > 0) unit.cd2--;
   }
 
   function tryBreath() {
@@ -913,10 +1061,10 @@ window.ETERNUM = window.ETERNUM || {};
     const healPct = 0.25;
     E.run.hero.hp = Math.max(1, Math.floor(E.run.hero.maxHp * healPct));
     E.run.hero.alive = true;
-    if (E.run.merc) {
-      E.run.merc.hp = Math.max(1, Math.floor(E.run.merc.maxHp * healPct));
-      E.run.merc.alive = true;
-    }
+    (E.run.mercs || []).forEach((unit) => {
+      unit.hp = Math.max(1, Math.floor(unit.maxHp * healPct));
+      unit.alive = true;
+    });
     log("good", "Свиток второго дыхания поднимает отряд с 25% HP");
     return true;
   }
@@ -944,7 +1092,7 @@ window.ETERNUM = window.ETERNUM || {};
     E.state.meta.goldEarned += gold;
     const levelBefore = E.state.level;
     const notes = grantXp(xp);
-    if (E.state.level !== levelBefore || (E.state.merc && notes.length)) syncSheetsKeepingHp();
+    if (E.state.level !== levelBefore || notes.length) syncSheetsKeepingHp();
     if (E.state.level !== levelBefore && E.run.hero.hp > 0) E.run.hero.hp = E.run.hero.maxHp;
     drops.forEach((item) => giveItem(item));
     if (setReady("phoenix", 4) && E.run.hero.hp > 0) {
@@ -956,10 +1104,11 @@ window.ETERNUM = window.ETERNUM || {};
       const heal = Math.max(1, Math.floor(E.run.hero.maxHp * mods.heal));
       E.run.hero.hp = Math.min(E.run.hero.maxHp, E.run.hero.hp + heal);
       log("heal", "Живучесть: +" + heal + " HP");
-      if (E.run.merc && E.run.merc.hp > 0) {
-        const mh = Math.max(1, Math.floor(E.run.merc.maxHp * mods.heal));
-        E.run.merc.hp = Math.min(E.run.merc.maxHp, E.run.merc.hp + mh);
-      }
+      (E.run.mercs || []).forEach((unit) => {
+        if (unit.hp <= 0) return;
+        const mh = Math.max(1, Math.floor(unit.maxHp * mods.heal));
+        unit.hp = Math.min(unit.maxHp, unit.hp + mh);
+      });
     }
     E.run.peak = Math.max(E.run.peak, floor);
     E.run.between = true;
@@ -1174,7 +1323,12 @@ window.ETERNUM = window.ETERNUM || {};
   };
 
   function gearBag(who) {
-    if (who === "merc") return ensureMercGear();
+    if (who != null && who !== "kai") {
+      const merc = mercList()[Number(who)];
+      if (!merc) return null;
+      merc.equipment = Object.assign(blankGear(), merc.equipment || {});
+      return merc.equipment;
+    }
     return E.state.equipment;
   }
 
@@ -1348,27 +1502,36 @@ window.ETERNUM = window.ETERNUM || {};
   };
 
   E.hireMerc = function (classId) {
-    if (E.state.merc) return { ok: false, msg: "В отряде уже есть спутник" };
+    const list = mercList();
+    if (list.length >= 3) return { ok: false, msg: "В отряде уже три спутника" };
+    if (!E.CLASSES[classId]) return { ok: false, msg: "Такого пути нет" };
     if (!spend(E.SHOP.hire)) return { ok: false, msg: "Наём стоит 1000 золота" };
-    const cls = E.CLASSES[classId];
-    E.state.merc = {
-      name: pick(E.MERC_NAMES),
+    const used = list.map((merc) => merc.name);
+    const pool = E.MERC_NAMES.filter((name) => used.indexOf(name) < 0);
+    const merc = normalizeMerc({
+      name: pick(pool.length ? pool : E.MERC_NAMES),
       classId,
       level: Math.max(1, E.state.level - 1),
       xp: 0,
-      equipment: blankGear()
-    };
+      equipment: blankGear(),
+      skills: {}
+    });
+    list.push(merc);
     E.save();
-    return { ok: true, msg: E.state.merc.name + " встаёт рядом. " + cls.name + "." };
+    E.refreshCombat();
+    return { ok: true, msg: merc.name + " встаёт рядом. " + E.CLASSES[classId].name + ". В отряде " + list.length + "/3." };
   };
 
-  E.dismissMerc = function () {
-    if (!E.state.merc) return;
-    const worn = Object.values(E.state.merc.equipment || {}).filter(Boolean);
+  E.dismissMerc = function (index) {
+    const list = mercList();
+    const merc = list[Number(index)];
+    if (!merc) return;
+    const worn = Object.values(merc.equipment || {}).filter(Boolean);
     if (E.state.inventory.length + worn.length > E.invMax()) return "full";
     worn.forEach((item) => E.state.inventory.push(item));
     E.state.gold += 500;
-    E.state.merc = null;
+    list.splice(Number(index), 1);
+    if (E.run && E.run.mercs) E.run.mercs = E.run.mercs.filter((unit) => unit.mercId !== merc.id);
     E.save();
   };
 
@@ -1395,7 +1558,13 @@ window.ETERNUM = window.ETERNUM || {};
     return Math.max(0, (E.state.level || 1) - 1 - spent);
   };
 
-  E.skillNodes = function (classId) {
+  E.mercPoints = function (merc) {
+    let spent = 0;
+    Object.values((merc && merc.skills) || {}).forEach((rank) => { spent += rank || 0; });
+    return Math.max(0, (merc.level || 1) - 1 - spent);
+  };
+
+  E.skillNodes = function (classId, treeOverride) {
     const cls = E.CLASSES[classId || E.state.classId];
     if (!cls) return [];
     const master = {
@@ -1430,25 +1599,24 @@ window.ETERNUM = window.ETERNUM || {};
       { id: "stat", name: "Усиление", text: stat, max: 3, need: ["core"] },
       { id: "cap", name: cap[0], text: cap[1], max: 1, need: ["a1m", "a2m"] }
     ];
-    const tree = (E.state.skills || {})[cls.id] || {};
+    const tree = treeOverride || (E.state.skills || {})[cls.id] || {};
     const full = nodes.every((node) => (tree[node.id] || 0) >= node.max);
     if (full) nodes.push({ id: "over", name: "Запредельное", text: "+5 HP и +1 атаки за ранг. Можно качать дальше.", max: 99, need: ["cap"] });
     return nodes;
   };
 
-  E.buySkill = function (nodeId) {
-    const nodes = E.skillNodes();
+  E.buySkill = function (nodeId, who) {
+    const merc = who != null && who !== "kai" ? mercList()[Number(who)] : null;
+    const nodes = merc ? E.skillNodes(merc.classId, merc.skills) : E.skillNodes();
     const node = nodes.find((entry) => entry.id === nodeId);
     if (!node) return { ok: false, msg: "Такого узла нет" };
-    const tree = skillBag();
+    const tree = merc ? merc.skills : skillBag();
     const rank = tree[nodeId] || 0;
     if (rank >= node.max) return { ok: false, msg: "Узел уже на потолке" };
-    const blocked = node.need.some((req) => {
-      const need = nodeId === "cap" ? 1 : 1;
-      return (tree[req] || 0) < need;
-    });
+    const blocked = node.need.some((req) => (tree[req] || 0) < 1);
     if (blocked) return { ok: false, msg: "Сначала предыдущий узел" };
-    if (E.skillPoints() < 1) return { ok: false, msg: "Нет очков умений. Они приходят с уровнем." };
+    const points = merc ? E.mercPoints(merc) : E.skillPoints();
+    if (points < 1) return { ok: false, msg: "Нет очков умений. Они приходят с уровнем." };
     tree[nodeId] = rank + 1;
     E.save();
     E.refreshCombat();
@@ -1466,7 +1634,7 @@ window.ETERNUM = window.ETERNUM || {};
     const s1 = E.skillOpen(1);
     const s2 = E.skillOpen(2);
     if (s1 && cls.id === "CLERIC" && hero.cd1 === 0) {
-      const units = [hero].concat(E.run.merc && E.run.merc.hp > 0 ? [E.run.merc] : []);
+      const units = livingAllies();
       if (units.some((u) => u.hp / u.maxHp < 0.55)) return "s1";
     }
     if (s2 && cls.id === "WARRIOR" && hero.cd2 === 0 && hero.hp / hero.maxHp < 0.4) return "s2";
