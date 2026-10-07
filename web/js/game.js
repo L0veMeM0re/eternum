@@ -24,16 +24,27 @@ window.ETERNUM = window.ETERNUM || {};
     return found ? found.id : "";
   }
 
+  function blankGear() {
+    return { weapon: null, helmet: null, armor: null, gloves: null, boots: null, ring: null, amulet: null };
+  }
+
   function tagOwnedItems() {
     const touch = (item) => {
       if (item) item.set = detectSet(item.name);
     };
     Object.values(E.state.equipment || {}).forEach(touch);
     (E.state.inventory || []).forEach(touch);
+    if (E.state.merc && E.state.merc.equipment) Object.values(E.state.merc.equipment).forEach(touch);
   }
 
-  function setPieces(set) {
-    const worn = Object.values(E.state.equipment || {}).filter(Boolean);
+  function ensureMercGear() {
+    if (!E.state.merc) return null;
+    E.state.merc.equipment = Object.assign(blankGear(), E.state.merc.equipment || {});
+    return E.state.merc.equipment;
+  }
+
+  function setPieces(set, bag) {
+    const worn = Object.values(bag || E.state.equipment || {}).filter(Boolean);
     if (set.mythic) return worn.filter((item) => item.rarity === "mythic").length;
     return worn.filter((item) => (item.set || detectSet(item.name)) === set.id).length;
   }
@@ -43,10 +54,10 @@ window.ETERNUM = window.ETERNUM || {};
     return !!set && setPieces(set) >= need;
   }
 
-  function setStatBonus() {
+  function setStatBonus(bag) {
     const bonus = { hp: 0, atk: 0, def: 0, crit: 0, critDmg: 0, dodge: 0, vamp: 0, vampHeal: 0 };
     (E.SETS || []).forEach((set) => {
-      const count = setPieces(set);
+      const count = setPieces(set, bag);
       set.tiers.forEach((tier) => {
         if (count < tier.n) return;
         bonus.hp += tier.hp || 0;
@@ -82,7 +93,7 @@ window.ETERNUM = window.ETERNUM || {};
       trainHp: 0,
       trainAtk: 0,
       expansions: 0,
-      equipment: { weapon: null, helmet: null, armor: null, gloves: null, boots: null, ring: null, amulet: null },
+      equipment: blankGear(),
       inventory: [],
       scrolls: { blessing: 0, xp: 0, luck: 0, greed: 0, fog: 0, breath: 0 },
       potions: 0,
@@ -108,6 +119,7 @@ window.ETERNUM = window.ETERNUM || {};
       E.state.meta = Object.assign(blankSave().meta, data.meta || {});
       E.state.inventory = Array.isArray(data.inventory) ? data.inventory : [];
       E.state.skills = data.skills && typeof data.skills === "object" ? data.skills : {};
+      if (E.state.merc) ensureMercGear();
       tagOwnedItems();
       if (E.state.classId && !data.skillTreeInit) {
         const known = E.state.skills[E.state.classId] || {};
@@ -155,9 +167,9 @@ window.ETERNUM = window.ETERNUM || {};
     return E.RARITIES.find((r) => r.id === id);
   }
 
-  function equipTotals() {
+  function equipTotals(bag) {
     const t = { atk: 0, def: 0, hp: 0, crit: 0, critDmg: 0, dodge: 0, vamp: 0, vampHeal: 0 };
-    Object.values(E.state.equipment).forEach((item) => {
+    Object.values(bag || E.state.equipment).forEach((item) => {
       if (!item) return;
       t.atk += item.atk || 0;
       t.def += item.def || 0;
@@ -242,10 +254,16 @@ window.ETERNUM = window.ETERNUM || {};
     if (!merc) return null;
     const cls = E.CLASSES[merc.classId];
     const lvl = merc.level;
+    const gear = ensureMercGear();
+    const eq = equipTotals(gear);
+    const set = setStatBonus(gear);
     let hp = Math.floor((cls.hp + (lvl - 1) * 5) * 0.82);
     let atk = Math.floor((cls.atk + (lvl - 1)) * 0.82);
     let def = Math.floor((cls.def + (lvl - 1)) * 0.82);
     if (cls.id === "CLERIC") hp = Math.floor(hp * 1.1);
+    hp += eq.hp + set.hp;
+    atk += eq.atk + set.atk;
+    def += eq.def + set.def;
     const mods = runMods();
     hp = Math.floor(hp * mods.hp * (1 + E.state.meta.hp * 0.05));
     atk = Math.floor(atk * mods.dmg * (1 + mods.blessing) * (1 + E.state.meta.dmg * 0.05));
@@ -253,9 +271,11 @@ window.ETERNUM = window.ETERNUM || {};
       hp: Math.max(1, hp),
       atk: Math.max(1, atk),
       def: Math.max(0, def),
-      crit: clamp(cls.crit, 0, 50),
-      critDmg: cls.critDmg + (cls.id === "MAGE" ? 0.4 : 0),
-      dodge: clamp(cls.dodge, 0, 66)
+      crit: clamp(cls.crit + eq.crit + set.crit, 0, 50),
+      critDmg: cls.critDmg + (cls.id === "MAGE" ? 0.4 : 0) + eq.critDmg + set.critDmg,
+      dodge: clamp(cls.dodge + eq.dodge + set.dodge, 0, 66),
+      vamp: Math.min(50, eq.vamp + set.vamp),
+      vampHeal: Math.max(eq.vampHeal, set.vampHeal)
     };
   };
 
@@ -437,7 +457,8 @@ window.ETERNUM = window.ETERNUM || {};
       E.run.merc = {
         name: E.state.merc.name, classId: E.state.merc.classId,
         maxHp: mercSheet.hp, hp: mercSheet.hp, atk: mercSheet.atk, def: mercSheet.def,
-        crit: mercSheet.crit, critDmg: mercSheet.critDmg, dodge: mercSheet.dodge, alive: true
+        crit: mercSheet.crit, critDmg: mercSheet.critDmg, dodge: mercSheet.dodge,
+        vamp: mercSheet.vamp, vampHeal: mercSheet.vampHeal, alive: true
       };
     } else {
       E.run.merc = null;
@@ -463,6 +484,11 @@ window.ETERNUM = window.ETERNUM || {};
       E.run.merc.hp = E.run.merc.alive ? clamp(Math.round(ms.hp * prev), 0, ms.hp) : 0;
       E.run.merc.atk = ms.atk;
       E.run.merc.def = ms.def;
+      E.run.merc.crit = ms.crit;
+      E.run.merc.critDmg = ms.critDmg;
+      E.run.merc.dodge = ms.dodge;
+      E.run.merc.vamp = ms.vamp;
+      E.run.merc.vampHeal = ms.vampHeal;
     }
   }
 
@@ -877,6 +903,7 @@ window.ETERNUM = window.ETERNUM || {};
       const foe = livingFoes().slice().sort((a, b) => a.hp - b.hp)[0];
       const result = strike(E.run.merc, foe, {});
       describeHit(E.run.merc.name, foe.name, result, "атакует");
+      afterHeroHit(E.run.merc, result);
     }
   }
 
@@ -1146,32 +1173,41 @@ window.ETERNUM = window.ETERNUM || {};
     return item.atk * 3 + item.def * 2 + item.hp * 0.45 + item.crit * 2 + item.dodge + item.critDmg * 8 + item.vamp;
   };
 
-  E.equipItem = function (index) {
+  function gearBag(who) {
+    if (who === "merc") return ensureMercGear();
+    return E.state.equipment;
+  }
+
+  E.equipItem = function (index, who) {
+    const bag = gearBag(who);
     const item = E.state.inventory[index];
-    if (!item) return;
-    const prev = E.state.equipment[item.slot];
-    E.state.equipment[item.slot] = item;
+    if (!bag || !item) return;
+    const prev = bag[item.slot];
+    bag[item.slot] = item;
     E.state.inventory.splice(index, 1);
     if (prev) E.state.inventory.push(prev);
     E.save();
   };
 
-  E.unequip = function (slot) {
-    const item = E.state.equipment[slot];
+  E.unequip = function (slot, who) {
+    const bag = gearBag(who);
+    const item = bag && bag[slot];
     if (!item) return;
     if (E.state.inventory.length >= E.invMax()) return "full";
     E.state.inventory.push(item);
-    E.state.equipment[slot] = null;
+    bag[slot] = null;
     E.save();
   };
 
-  E.equipBest = function () {
+  E.equipBest = function (who) {
+    const bag = gearBag(who);
+    if (!bag) return 0;
     let moved = 0;
     let guard = 0;
     while (guard++ < 40) {
       let best = null;
       E.state.inventory.forEach((item, index) => {
-        const current = E.state.equipment[item.slot];
+        const current = bag[item.slot];
         if (E.itemScore(item) > E.itemScore(current) + 0.01) {
           if (!best || E.itemScore(item) - E.itemScore(current) > best.gain) {
             best = { index, gain: E.itemScore(item) - E.itemScore(current) };
@@ -1179,7 +1215,7 @@ window.ETERNUM = window.ETERNUM || {};
         }
       });
       if (!best) break;
-      E.equipItem(best.index);
+      E.equipItem(best.index, who);
       moved++;
     }
     return moved;
@@ -1319,7 +1355,8 @@ window.ETERNUM = window.ETERNUM || {};
       name: pick(E.MERC_NAMES),
       classId,
       level: Math.max(1, E.state.level - 1),
-      xp: 0
+      xp: 0,
+      equipment: blankGear()
     };
     E.save();
     return { ok: true, msg: E.state.merc.name + " встаёт рядом. " + cls.name + "." };
@@ -1327,6 +1364,9 @@ window.ETERNUM = window.ETERNUM || {};
 
   E.dismissMerc = function () {
     if (!E.state.merc) return;
+    const worn = Object.values(E.state.merc.equipment || {}).filter(Boolean);
+    if (E.state.inventory.length + worn.length > E.invMax()) return "full";
+    worn.forEach((item) => E.state.inventory.push(item));
     E.state.gold += 500;
     E.state.merc = null;
     E.save();

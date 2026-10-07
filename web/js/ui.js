@@ -3,6 +3,7 @@
   let screen = "title";
   let townTab = "";
   let charTab = "gear";
+  let wearWho = "kai";
   let treeFocus = "a1u";
   let prologueAt = 0;
   let autoTimer = null;
@@ -236,11 +237,19 @@
     return `<div class="stat"><span>${label}</span><strong>${value}</strong></div>`;
   }
 
+  function wearTarget() {
+    if (wearWho === "merc" && E.state.merc && E.state.merc.equipment) return "merc";
+    return "kai";
+  }
+
   function renderCharacter() {
-    const sheet = E.heroSheet();
-    const cls = E.CLASSES[E.state.classId];
+    const who = wearTarget();
+    const merc = E.state.merc;
+    const gear = who === "merc" ? merc.equipment : E.state.equipment;
+    const sheet = who === "merc" ? E.mercSheet() : E.heroSheet();
+    const cls = E.CLASSES[who === "merc" ? merc.classId : E.state.classId];
     const slots = E.SLOTS.map((slot) => {
-      const item = E.state.equipment[slot.id];
+      const item = gear[slot.id];
       return `<button class="slot ${item ? "filled rarity-" + item.rarity : ""}" data-act="unequip" data-arg="${slot.id}">
         <img class="slot-icon" src="${E.ART.slots[slot.id]}" alt="">
         <span class="slot-copy">
@@ -255,7 +264,7 @@
           <img class="slot-icon" src="${E.ART.slots[item.slot]}" alt="">
           <div><b>${esc(item.name)}</b><small>${esc(rarityName(item.rarity))} · ${esc(slotName(item.slot))} · ${esc(E.itemLabel(item).split(" · ").slice(1).join(" · "))}</small></div>
           <div class="row tight">
-            <button data-act="equip" data-arg="${i}">Надеть</button>
+            <button data-act="equip" data-arg="${i}">${who === "merc" ? "Спутнику" : "Надеть"}</button>
             <button data-act="sell" data-arg="${i}">${item.sell} зол.</button>
           </div>
         </li>`).join("")
@@ -266,18 +275,25 @@
       return `<button class="chip ${charTab === id ? "on" : ""}" data-act="char-tab" data-arg="${id}">${label}</button>`;
     }).join("");
     const activeSets = (E.SETS || []).map((set) => {
-      const count = E.setPieces(set);
+      const count = E.setPieces(set, gear);
       return count ? set.name + " " + count : "";
     }).filter(Boolean).join(" · ");
-    const body = charTab === "tree" ? renderTree() : charTab === "sets" ? renderSets() : `
+    const wearChips = merc
+      ? `<div class="chips">
+          <button class="chip ${who === "kai" ? "on" : ""}" data-act="wear" data-arg="kai">Кай</button>
+          <button class="chip ${who === "merc" ? "on" : ""}" data-act="wear" data-arg="merc">${esc(merc.name)}</button>
+        </div>`
+      : "";
+    const body = charTab === "tree" ? renderTree() : charTab === "sets" ? renderSets(gear) : `
+      ${wearChips}
       <div class="row">
-        <button class="btn solid" data-act="equip-best">Надеть лучшее</button>
+        <button class="btn solid" data-act="equip-best">${who === "merc" ? "Лучшее спутнику" : "Надеть лучшее"}</button>
         <button class="btn line" data-act="sell-common">Продать обычное</button>
         <button class="btn line" data-act="sell-all">Продать всё</button>
         <button class="btn line" data-act="class">Сменить класс</button>
         ${E.run ? `<button class="btn line" data-act="combat">К бою</button>` : ""}
       </div>
-      <h3>Экипировка</h3>
+      <h3>${who === "merc" ? "Снаряжение спутника" : "Экипировка"}</h3>
       <div class="slots">${slots}</div>
       <h3>Рюкзак ${E.state.inventory.length}/${E.invMax()}</h3>
       <p class="fine">Автопродажа при подборе:</p>
@@ -285,10 +301,10 @@
       <ul class="bag">${bag}</ul>`;
     return `<section class="character">
       <div class="section-head with-face">
-        <img class="face" src="${E.ART.kai}" alt="">
+        <img class="face" src="${who === "merc" ? E.ART.classes[merc.classId] : E.ART.kai}" alt="">
         <div>
-        <p class="eyebrow">${esc(cls.name)} · уровень ${E.state.level}</p>
-        <h2>Кай</h2>
+        <p class="eyebrow">${esc(cls.name)} · уровень ${who === "merc" ? merc.level : E.state.level}</p>
+        <h2>${who === "merc" ? esc(merc.name) : "Кай"}</h2>
         <p>${sheet.hp} HP · ${sheet.atk} атаки · ${sheet.def} защиты · крит ${Math.round(sheet.crit)}% · уклон ${Math.round(sheet.dodge)}%</p>
         <p class="fine">${activeSets || "Сет ещё не собран. Редкие вещи носят имя сета."}</p>
         </div>
@@ -404,9 +420,9 @@
     return "очков";
   }
 
-  function renderSets() {
+  function renderSets(gear) {
     const cards = E.SETS.map((set) => {
-      const count = E.setPieces(set);
+      const count = E.setPieces(set, gear);
       const max = set.tiers[set.tiers.length - 1].n;
       const tiers = set.tiers.map((tier) => `<li class="${count >= tier.n ? "on" : ""}"><b>${tier.n} шт.</b> ${esc(tier.text)}</li>`).join("");
       return `<article class="set-card ${count >= 2 ? "live" : ""}">
@@ -751,15 +767,23 @@
       toast(res.msg);
       render();
     } else if (act === "dismiss") {
-      E.dismissMerc();
-      toast("Спутник уходит с площади");
+      const res = E.dismissMerc();
+      if (res === "full") toast("Рюкзак полон: вещи спутника некуда вернуть");
+      else {
+        wearWho = "kai";
+        toast("Спутник уходит с площади");
+      }
+      E.refreshCombat();
+      render();
+    } else if (act === "wear") {
+      wearWho = arg === "merc" ? "merc" : "kai";
       render();
     } else if (act === "equip") {
-      E.equipItem(Number(arg));
+      E.equipItem(Number(arg), wearTarget());
       E.refreshCombat();
       render();
     } else if (act === "unequip") {
-      const res = E.unequip(arg);
+      const res = E.unequip(arg, wearTarget());
       if (res === "full") toast("Рюкзак полон");
       E.refreshCombat();
       render();
@@ -778,7 +802,7 @@
       render();
     } else if (act === "autosell") { E.toggleAutoSell(arg); render(); }
     else if (act === "equip-best") {
-      const n = E.equipBest();
+      const n = E.equipBest(wearTarget());
       E.refreshCombat();
       toast(n ? "Надето вещей: " + n : "Лучше уже надето");
       render();
